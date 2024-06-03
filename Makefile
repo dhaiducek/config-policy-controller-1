@@ -39,12 +39,6 @@ REGISTRY ?= quay.io/open-cluster-management
 TAG ?= latest
 IMAGE_NAME_AND_VERSION ?= $(REGISTRY)/$(IMG)
 
-# Fix sed issues on mac by using GSED
-SED="sed"
-ifeq ($(GOOS), darwin)
-  SED="gsed"
-endif
-
 include build/common/Makefile.common.mk
 
 ############################################################
@@ -92,9 +86,8 @@ build-images:
 # Deploy controller in the configured Kubernetes cluster in ~/.kube/config
 .PHONY: deploy
 deploy: generate-operator-yaml create-ns
-	$(SED) -i 's/\(namespace: \)open-cluster-management-agent-addon/\1$(CONTROLLER_NAMESPACE)/' -i deploy/operator.yaml 
-	kubectl apply -f deploy/operator.yaml -n $(CONTROLLER_NAMESPACE)
-	$(SED) -i 's/\(namespace: \)$(CONTROLLER_NAMESPACE)/\1open-cluster-management-agent-addon/' -i deploy/operator.yaml 
+	yq 'select(.kind == "ClusterRoleBinding") |= .subjects[0].namespace = "$(CONTROLLER_NAMESPACE)"' deploy/operator.yaml | \
+		kubectl apply -n $(CONTROLLER_NAMESPACE) -f - 
 	kubectl apply -f deploy/crds/policy.open-cluster-management.io_configurationpolicies.yaml -n $(CONTROLLER_NAMESPACE)
 	kubectl set env deployment/$(IMG) -n $(CONTROLLER_NAMESPACE) WATCH_NAMESPACE=$(WATCH_NAMESPACE)
 
