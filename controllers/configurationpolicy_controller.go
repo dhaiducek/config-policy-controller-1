@@ -1317,7 +1317,6 @@ func (r *ConfigurationPolicyReconciler) determineDesiredObjects(
 	// Set up relevant object namespace-names map to populate with the
 	// namespaceSelector and objectSelector
 	relevantNsNames := map[string][]string{}
-
 	desiredNs := parsedMinMetadata.Metadata.Namespace
 
 	// If the namespace is templated, consider it not explicitly set
@@ -1412,6 +1411,9 @@ func (r *ConfigurationPolicyReconciler) determineDesiredObjects(
 				index, err,
 			)
 
+			msg := fmt.Sprintf("Error parsing provided objectSelector: %v", err)
+
+			// only report this error if there wasn't another yet
 			errEvent := &objectTmplEvalEvent{
 				compliant: false,
 				reason:    "objectSelector error",
