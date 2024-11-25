@@ -5,9 +5,11 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/types"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -564,6 +566,183 @@ var _ = Describe("Test templatization", Ordered, func() {
 		AfterAll(func() {
 			utils.KubectlDelete("configurationpolicy", policyName, "-n", testNamespace)
 			utils.KubectlDelete("configurationpolicy", invalidPolicyName, "-n", testNamespace)
+			utils.KubectlDelete("-f", preReqs)
+		})
+	})
+
+	FDescribe("Policy with the ObjectName variable", Ordered, func() {
+		const (
+			preReqs           = case13RsrcPath + "/case13_objectname_var_prereqs.yaml"
+			policyYAML        = case13RsrcPath + "/case13_objectname_var.yaml"
+			policyName        = "case13-objectname-var"
+			e2eBaseName       = "case13-e2e-objectname-var"
+			invalidPolicyYAML = case13RsrcPath + "/case13_objectname_var_invalid_name.yaml"
+			invalidPolicyName = "case13-invalid-name"
+			emptyPolicyYAML   = case13RsrcPath + "/case13_objectname_var_empty_name.yaml"
+			emptyPolicyName   = "case13-empty-name"
+			skipPolicyYAML    = case13RsrcPath + "/case13_objectname_var_skip_name.yaml"
+			skipPolicyName    = "case13-skip-name"
+		)
+
+		It("Should enforce the labels on the case13-e2e-objectname-var* ConfigMaps", func(ctx SpecContext) {
+			By("Creating the prerequisites")
+			utils.Kubectl("apply", "-f", preReqs)
+
+			By("Applying the " + policyName + " ConfigurationPolicy")
+			utils.Kubectl("apply", "-n", testNamespace, "-f", policyYAML)
+
+			By("By verifying that the ConfigurationPolicy is compliant and has the correct related objects")
+			Eventually(func(g Gomega) {
+				managedPlc := utils.GetWithTimeout(
+					clientManagedDynamic, gvrConfigPolicy, policyName, testNamespace, true, defaultTimeoutSeconds,
+				)
+
+				utils.CheckComplianceStatus(g, managedPlc, "Compliant")
+				g.Expect(utils.GetStatusMessage(managedPlc)).Should(Equal(fmt.Sprintf(
+					"configmaps [case13-e2e-objectname-var1] found as specified in namespace %[1]s; "+
+						"configmaps [case13-e2e-objectname-var2] found as specified in namespace %[1]s; "+
+						"configmaps [case13-e2e-objectname-var3] found as specified in namespace %[1]s", e2eBaseName)))
+
+				relatedObjects, _, _ := unstructured.NestedSlice(managedPlc.Object, "status", "relatedObjects")
+				g.Expect(relatedObjects).To(HaveLen(3))
+
+				for idx := range relatedObjects {
+					relatedObject, ok := relatedObjects[idx].(map[string]interface{})
+					g.Expect(ok).To(BeTrue(), "Related object is not a map")
+					relatedObject1NS, _, _ := unstructured.NestedString(relatedObject, "object", "metadata", "name")
+					g.Expect(relatedObject1NS).To(
+						Equal(fmt.Sprintf("%s%d", e2eBaseName, idx+1)),
+						"Related object name should match")
+				}
+			}, defaultTimeoutSeconds, 1).Should(Succeed())
+
+			By("By verifying the ConfigMaps")
+			configMaps, err := clientManaged.CoreV1().ConfigMaps(e2eBaseName).List(
+				ctx, metav1.ListOptions{
+					LabelSelector: "case13",
+				},
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			for _, cm := range configMaps.Items {
+				Expect(cm.ObjectMeta.Labels).To(HaveKeyWithValue("case13", "passed"))
+				Expect(cm.ObjectMeta.Labels).To(HaveKeyWithValue("name", cm.GetName()))
+				Expect(cm.ObjectMeta.Labels).To(HaveKeyWithValue("namespace", cm.GetNamespace()))
+			}
+		})
+
+		It("Should omit ConfigMaps when $SKIP is returned", func(ctx SpecContext) {
+			By("Creating the prerequisites")
+			utils.Kubectl("apply", "-f", preReqs)
+
+			By("Applying the " + skipPolicyName + " ConfigurationPolicy")
+			utils.Kubectl("apply", "-n", testNamespace, "-f", skipPolicyYAML)
+
+			By("By verifying that the ConfigurationPolicy is compliant and has the correct related objects")
+			Eventually(func(g Gomega) {
+				managedPlc := utils.GetWithTimeout(
+					clientManagedDynamic, gvrConfigPolicy, skipPolicyName, testNamespace, true, defaultTimeoutSeconds,
+				)
+
+				utils.CheckComplianceStatus(g, managedPlc, "Compliant")
+				g.Expect(utils.GetStatusMessage(managedPlc)).Should(Equal(fmt.Sprintf(
+					"configmaps [case13-e2e-objectname-var1] found as specified in namespace %[1]s; "+
+						"configmaps [case13-e2e-objectname-var3] found as specified in namespace %[1]s", e2eBaseName)))
+
+				relatedObjects, _, _ := unstructured.NestedSlice(managedPlc.Object, "status", "relatedObjects")
+				g.Expect(relatedObjects).To(HaveLen(2))
+
+				for idx := range relatedObjects {
+					relatedObject, ok := relatedObjects[idx].(map[string]interface{})
+					g.Expect(ok).To(BeTrue(), "Related object is not a map")
+					relatedObject1NS, _, _ := unstructured.NestedString(relatedObject, "object", "metadata", "name")
+					g.Expect(relatedObject1NS).To(
+						Equal(fmt.Sprintf("%s%d", e2eBaseName, 2*idx+1)),
+						"Related object name should match")
+				}
+			}, defaultTimeoutSeconds, 1).Should(Succeed())
+
+			By("By verifying the ConfigMaps")
+			configMaps, err := clientManaged.CoreV1().ConfigMaps(e2eBaseName).List(
+				ctx, metav1.ListOptions{
+					LabelSelector: "case13",
+				},
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			for idx, cm := range configMaps.Items {
+				labelAssertion := Expect(cm.ObjectMeta.Labels)
+				var labelAssertionFn func(types.GomegaMatcher, ...interface{}) bool
+				if idx == 1 {
+					labelAssertionFn = labelAssertion.ToNot
+				} else {
+					labelAssertionFn = labelAssertion.To
+				}
+				labelAssertionFn(HaveKeyWithValue("case13", "passed"))
+				labelAssertionFn(HaveKeyWithValue("name", cm.GetName()))
+				labelAssertionFn(HaveKeyWithValue("namespace", cm.GetNamespace()))
+			}
+		})
+
+		It("Should fail when the name is empty after template resolution", func(ctx SpecContext) {
+			By("Creating the prerequisites")
+			utils.Kubectl("apply", "-f", preReqs)
+
+			By("Applying the " + emptyPolicyName + " ConfigurationPolicy")
+			utils.Kubectl("apply", "-n", testNamespace, "-f", emptyPolicyYAML)
+
+			By("By verifying that the ConfigurationPolicy is noncompliant")
+			Eventually(func(g Gomega) {
+				managedPlc := utils.GetWithTimeout(
+					clientManagedDynamic,
+					gvrConfigPolicy,
+					emptyPolicyName,
+					testNamespace,
+					true,
+					defaultTimeoutSeconds,
+				)
+
+				utils.CheckComplianceStatus(g, managedPlc, "NonCompliant")
+				g.Expect(utils.GetStatusMessage(managedPlc)).To(Equal(
+					"The object definition's name must match the selected name after template resolution",
+				))
+			}, defaultTimeoutSeconds, 1).Should(Succeed())
+		})
+
+		It("Should fail when the name doesn't match after template resolution", func(ctx SpecContext) {
+			By("Creating the prerequisites")
+			utils.Kubectl("apply", "-f", preReqs)
+
+			By("Applying the " + invalidPolicyName + " ConfigurationPolicy")
+			utils.Kubectl("apply", "-n", testNamespace, "-f", invalidPolicyYAML)
+
+			By("By verifying that the ConfigurationPolicy is noncompliant")
+			Eventually(func(g Gomega) {
+				managedPlc := utils.GetWithTimeout(
+					clientManagedDynamic,
+					gvrConfigPolicy,
+					invalidPolicyName,
+					testNamespace,
+					true,
+					defaultTimeoutSeconds,
+				)
+
+				utils.CheckComplianceStatus(g, managedPlc, "NonCompliant")
+				g.Expect(utils.GetStatusMessage(managedPlc)).To(Equal(
+					"The object definition's name must match the selected name after template resolution",
+				))
+			}, defaultTimeoutSeconds, 1).Should(Succeed())
+		})
+
+		AfterEach(func() {
+			utils.KubectlDelete("configurationpolicy", policyName, "-n", testNamespace)
+			utils.KubectlDelete("configurationpolicy", invalidPolicyName, "-n", testNamespace)
+			utils.KubectlDelete("configurationpolicy", emptyPolicyName, "-n", testNamespace)
+			utils.KubectlDelete("configurationpolicy", skipPolicyName, "-n", testNamespace)
+			utils.KubectlDelete("configmaps", "-n", e2eBaseName, "--all")
+		})
+
+		AfterAll(func() {
 			utils.KubectlDelete("-f", preReqs)
 		})
 	})
